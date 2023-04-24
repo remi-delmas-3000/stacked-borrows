@@ -4,30 +4,17 @@
 #include <stdlib.h>
 
 /*
-  An emulation of shadow memory.
-
-  A global map associates k bytes of shadow data to any individual byte of
-  user-space objects (local or dynamic).
-
-  A instance
-  ```
-  __CPROVER_shadow_memory_map_t __shadow_map;
-  ```
-  Is a map from object IDs to (lazily allocated) shadow objects pointers.
-
-  The shadow object for some object pointed to by `ptr` is of size
-  `k * __CPROVER_OBJECT_SIZE(ptr)` where `k` is user defined.
-
-  A pointer to the k shadow bytes for the byte pointed to by `ptr` is obtained
-  by rewriting `ptr` to:
-
-  ```
-  __shadow_map[__CPROVER_POINTER_OBJECT(ptr)] + k *
-  __CPROVER_POINTER_OFFSET(ptr)
-  ```
-  It is possible to have several different shadow maps with different k values.
+  A shadow memory map allows to map any individual byte of an object manipulated
+  by user code to k shadow bytes in shadow memory.
+  A shadow map is simply modelled as a map from object IDs to lazily allocated
+  shadow objects. The size of a shadow object is k times the size of its source
+  object.
+  Given a pointer `ptr` to some byte, a pointer to the start of the k shadow
+  bytes is obtained by changing the base address of `ptr` and scaling its offset
+  by k.
+  It is possible to allocate several different shadow maps with different k
+  values in a same program.
 */
-
 
 typedef struct {
   size_t shadow_bytes_per_byte;
@@ -48,8 +35,7 @@ void __CPROVER_shadow_memory_map_init(
     size_t shadow_bytes_per_byte) {
   *__shadow_memory_map = (__CPROVER_shadow_memory_map_t){
       .shadow_bytes_per_byte = shadow_bytes_per_byte,
-      .map = __CPROVER_allocate( * sizeof(void *), 1)};
-  __CPROVER_array_set(__shadow_memory_map->map, 0);
+      .map = __CPROVER_allocate(__nof_objects * sizeof(void *), 1)};
 }
 
 // Returns a pointer to the shadow bytes of the byte pointed to by ptr
@@ -61,7 +47,6 @@ void *__CPROVER_shadow_memory_map_get(
     shadow_object_ptr = __CPROVER_allocate(
         __shadow_memory_map->shadow_bytes_per_byte * __CPROVER_OBJECT_SIZE(ptr),
         1);
-    __CPROVER_array_set(shadow_object_ptr, 0);
     __shadow_memory_map->map[id] = shadow_object_ptr;
   }
   return shadow_object_ptr + __shadow_memory_map->shadow_bytes_per_byte *
