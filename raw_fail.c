@@ -1,6 +1,7 @@
 #include "stacked_borrows.h"
+
 int main() {
-  SB_INIT(true, 8);
+  SB_INIT(true, 16);
 
   // let mut local = 5;
   int32_t local = 5;

@@ -18,3 +18,6 @@ shared_pass:
 
 transmute_fail:
 	cbmc --pointer-check --bounds-check --slice-formula transmute_fail.c
+
+test:
+	cbmc --pointer-check --bounds-check --slice-formula test.c

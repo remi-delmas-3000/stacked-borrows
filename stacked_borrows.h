@@ -6,7 +6,7 @@
 
 // analyse with --slice-formula and minisat
 // remoarks
-#include "shadow_memory_map.h"
+#include "shadow_map.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,7 +26,6 @@ const sb_kind_t SB_UNIQUE = 0x1;
 const sb_kind_t SB_SHARED_RO = 0x2;
 // *mut x
 const sb_kind_t SB_SHARED_RW = 0x4;
-
 // disabled &mut x
 const sb_kind_t SB_DISABLED = 0x4;
 
@@ -67,11 +66,13 @@ size_t nondet_size_t();
 // returns size if symbolic is false, a nondet constrained to
 // be at least size otherwise
 size_t __init_size(bool symbolic, size_t size) {
+  assert(size <= UINT8_MAX);
   if (!symbolic)
     return size;
-
   size_t result = nondet_size_t();
-  __CPROVER_assume(result >= size);
+  // this should ensure that CBMC treats the array as symbolic
+  // that that field sensitivity does not kick-in
+  __CPROVER_assume(result == size);
   return result;
 }
 
@@ -82,7 +83,6 @@ sb_stack_t *sb_stack_create() {
       .top = 0,
       .elems = __CPROVER_allocate(
           __init_size(SB_SYMSIZE, sizeof(sb_item_t) * SB_MAX_STACK_SIZE), 1)};
-  __CPROVER_array_set(stack->elems, 0);
   return stack;
 }
 
@@ -93,7 +93,7 @@ void sb_stack_push(sb_stack_t *stack, sb_kind_t kind, sb_id_t id) {
 }
 
 int8_t sb_stack_find(sb_stack_t *stack, sb_kind_t kind, sb_id_t id) {
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].kind == kind & stack->elems[i].id == id)
       return i;
   }
@@ -103,44 +103,40 @@ int8_t sb_stack_find(sb_stack_t *stack, sb_kind_t kind, sb_id_t id) {
 // shadow map that associates a borrow ID to each pointer variable of the
 // program The borrow ID is stored under the object ID of the memory location
 // that contains the pointer variable.
-__CPROVER_shadow_memory_map_t __sb_id_map;
+shadow_map_t __sb_id_map;
 
-void sb_id_map_init() {
-  __CPROVER_shadow_memory_map_init(&__sb_id_map, sizeof(sb_id_t));
-}
+void sb_id_map_init() { shadow_map_init(&__sb_id_map, sizeof(sb_id_t)); }
 
 void sb_id_map_set_ptr(void **ptr_to_ptr, sb_id_t id) {
-  *(sb_id_t *)__CPROVER_shadow_memory_map_get(&__sb_id_map, ptr_to_ptr) = id;
+  *(sb_id_t *)shadow_map_get(&__sb_id_map, ptr_to_ptr) = id;
 }
 
 void sb_id_map_set_local(void *address_of_local, sb_id_t id) {
-  *(sb_id_t *)__CPROVER_shadow_memory_map_get(&__sb_id_map, address_of_local) =
-      id;
+  *(sb_id_t *)shadow_map_get(&__sb_id_map, address_of_local) = id;
 }
 
 sb_id_t sb_id_map_get_ptr(void **ptr_to_ptr) {
-  return *(sb_id_t *)__CPROVER_shadow_memory_map_get(&__sb_id_map, ptr_to_ptr);
+  return *(sb_id_t *)shadow_map_get(&__sb_id_map, ptr_to_ptr);
 }
 
 sb_id_t sb_id_map_get_local(void *address_of_local) {
-  return *(sb_id_t *)__CPROVER_shadow_memory_map_get(&__sb_id_map,
-                                                     address_of_local);
+  return *(sb_id_t *)shadow_map_get(&__sb_id_map, address_of_local);
 }
 
 // Shadow memory that associates pointers with borrow stacks
-__CPROVER_shadow_memory_map_t __sb_stack_map;
+shadow_map_t __sb_stack_map;
 
 // Initialises a shadow map of stack pointers
 void sb_stack_map_init() {
-  __CPROVER_shadow_memory_map_init(&__sb_stack_map, sizeof(sb_stack_t *));
+  shadow_map_init(&__sb_stack_map, sizeof(sb_stack_t *));
 }
 
 // Gets the borrow stack associated with the memory location pointed to by ptr.
 sb_stack_t *sb_stack_get(void *ptr) {
-  sb_stack_t **shadow_stack =
-      __CPROVER_shadow_memory_map_get(&__sb_stack_map, ptr);
+  sb_stack_t **shadow_stack = shadow_map_get(&__sb_stack_map, ptr);
   if (!*shadow_stack) {
     *shadow_stack = sb_stack_create();
+    (*shadow_stack)->top = 0;
   }
   return *shadow_stack;
 }
@@ -150,7 +146,6 @@ sb_stack_t *sb_stack_get(void *ptr) {
   do {                                                                         \
     SB_SYMSIZE = symbolic_size;                                                \
     SB_MAX_STACK_SIZE = max_stack_size;                                        \
-    sb_set_stack_size(max_stack_size, symbolic_size);                          \
     sb_id_map_init();                                                          \
     sb_stack_map_init();                                                       \
   } while (0)
@@ -223,9 +218,8 @@ void sb_new_mut_from_ref(void **new_ref, void **old_ref) {
 
 bool sb_use1_local(void *used) {
   sb_id_t used_id = sb_id_map_get_local(used);
-  assert(used_id == 0);
   sb_stack_t *stack = sb_stack_get(used);
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE) {
       stack->top = i + 1;
       return true;
@@ -245,7 +239,7 @@ bool sb_use1_local(void *used) {
 bool sb_use1(void **used) {
   sb_id_t used_id = sb_id_map_get_ptr(used);
   sb_stack_t *stack = sb_stack_get(*used);
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE) {
       stack->top = i + 1;
       return true;
@@ -296,7 +290,7 @@ bool sb_use2_local(void *used) {
   sb_id_t used_id = sb_id_map_get_local(used);
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
   sb_stack_t *stack = sb_stack_get(used);
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
       stack->top = i + 1;
       return true;
@@ -317,7 +311,7 @@ bool sb_use2(void **used) {
   sb_id_t used_id = sb_id_map_get_ptr(used);
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
   sb_stack_t *stack = sb_stack_get(*used);
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
       stack->top = i + 1;
       return true;
@@ -365,7 +359,7 @@ bool sb_read1_local(void *used) {
   sb_stack_t *stack = sb_stack_get(used);
   bool found = false;
   int8_t new_top = -1;
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (!found) {
       found = stack->elems[i].id == used_id;
       new_top = i;
@@ -395,7 +389,7 @@ bool sb_read1(void **used) {
   sb_stack_t *stack = sb_stack_get(*used);
   bool found = false;
   int8_t new_top = -1;
-  for (int8_t i = 0; i < SB_MAX_STACK_SIZE && i < stack->top; i++) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (!found) {
       found = stack->elems[i].id == used_id;
       new_top = i;

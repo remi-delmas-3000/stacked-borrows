@@ -2,7 +2,7 @@
 
 /// shared references
 int main() {
-  SB_INIT(true, 8);
+  SB_INIT(true, 16);
 
   // let mut local = 42;
   int local = 42;

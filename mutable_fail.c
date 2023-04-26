@@ -1,7 +1,10 @@
 #include "stacked_borrows.h"
+#include <stdbool.h>
+
+bool nondet_bool();
 
 int main() {
-  SB_INIT(true, 8);
+  SB_INIT(true, 16);
 
   // let mut local = 42;
   int local = 42;
@@ -17,11 +20,15 @@ int main() {
   int *y = x;
   UNIQUE_FROM_REF(y, x);
 
-  USE1(x);
-  *x += 1;
+  if (nondet_bool()) {
+    USE1(x);
+    *x += 1;
+  }
 
-  USE1(y);
-  *y = 2;
+  if (nondet_bool()) {
+    USE1(y);
+    *y = 2;
+  }
 
   return 0;
 }
