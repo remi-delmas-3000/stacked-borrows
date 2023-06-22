@@ -6,7 +6,7 @@
 
 // analyse with --slice-formula and minisat
 // remoarks
-#include "shadow_map.h"
+#include "shadow_map_mult.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>

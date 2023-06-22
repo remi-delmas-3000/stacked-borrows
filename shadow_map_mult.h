@@ -18,7 +18,7 @@
 
 typedef struct {
   // nof shadow bytes per byte
-  size_t shift;
+  size_t shadow_bytes_per_byte;
   // pointers to shadow objects
   void **ptrs;
 } shadow_map_t;
@@ -31,21 +31,32 @@ int __builtin_clzll(unsigned long long);
   ((size_t)(1ULL << __builtin_clzll(__CPROVER_max_malloc_size)))
 
 // Initialises the given shadow memory map
-void shadow_map_init(shadow_map_t *smap, size_t k) {
-  __CPROVER_assert(1 == k || 2 == k || 4 == k || k == 8, "k must be in {1, 2, 4, 8}");
+void shadow_map_init(shadow_map_t *smap, size_t shadow_bytes_per_byte) {
+  __CPROVER_assert(1 == shadow_bytes_per_byte || 2 == shadow_bytes_per_byte ||
+                       4 == shadow_bytes_per_byte || 8 == shadow_bytes_per_byte,
+                   "shadow_bytes_per_byte must be in {1, 2, 4, 8}");
   *smap = (shadow_map_t){
-      .k = k, .ptrs = __CPROVER_allocate(__nof_objects * sizeof(void *), 1)};
+      .shadow_bytes_per_byte = shadow_bytes_per_byte,
+      .ptrs = __CPROVER_allocate(__nof_objects * sizeof(void *), 1)};
 }
 
 // Returns a pointer to the shadow bytes of the byte pointed to by ptr
 void *shadow_map_get(shadow_map_t *smap, void *ptr) {
-  size_t id = __CPROVER_POINTER_OBJECT(ptr);
+  __CPROVER_size_t id = __CPROVER_POINTER_OBJECT(ptr);
+  __CPROVER_size_t size = __CPROVER_OBJECT_SIZE(ptr);
+  __CPROVER_size_t offset = __CPROVER_POINTER_OFFSET(ptr);
+
+  size_t max_size = SIZE_MAX / smap->shadow_bytes_per_byte;
+  __CPROVER_assert(size <= max_size, " no overflow on size scaling");
+  __CPROVER_assert(offset <= max_size, " no overflow on offset scaling");
+
   void *sptr = smap->ptrs[id];
   if (!sptr) {
-    sptr = __CPROVER_allocate(smap->k * __CPROVER_OBJECT_SIZE(ptr), 1);
+    sptr = __CPROVER_allocate(
+        smap->shadow_bytes_per_byte * __CPROVER_OBJECT_SIZE(ptr), 1);
     smap->ptrs[id] = sptr;
   }
-  return sptr + (smap->k * __CPROVER_POINTER_OFFSET(ptr));
+  return sptr + (smap->shadow_bytes_per_byte * __CPROVER_POINTER_OFFSET(ptr));
 }
 
 #endif
