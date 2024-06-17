@@ -1,4 +1,8 @@
+#ifdef DEMONIC
+#include "stacked_borrows_demonic.h"
+#else
 #include "stacked_borrows.h"
+#endif
 
 int main() {
   SB_INIT(true, 16);

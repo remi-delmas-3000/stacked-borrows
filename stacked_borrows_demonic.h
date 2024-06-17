@@ -4,11 +4,10 @@
 #ifndef STACKED_BORROWS_DEFINED
 #define STACKED_BORROWS_DEFINED
 
-
 /*
   This model uses:
   - 1 shadow map to associate tag values with pointer values.
-  - 1 shadow map to associate a borrow stack to each memory location.
+  - a single borrow stack tracking a single memory location that is picked non-deterministically.
 */
 
 // analyse with --slice-formula and minisat
@@ -62,6 +61,8 @@ typedef struct {
 
 // A stack of borrow items
 typedef struct {
+  // address of the location being tracked
+  uint8_t *ptr;
   // Index of the next free slot in elems
   int8_t top;
   // An array of borrow items
@@ -86,7 +87,9 @@ size_t __init_size(bool symbolic, size_t size) {
 // Creates a fresh borrow stack
 sb_stack_t *sb_stack_create() {
   sb_stack_t *stack = __CPROVER_allocate(sizeof(*stack), 1);
+  // initially we dont track any location
   *stack = (sb_stack_t){
+      .ptr = NULL,
       .top = 0,
       .elems = __CPROVER_allocate(
           __init_size(SB_SYMSIZE, sizeof(sb_item_t) * SB_MAX_STACK_SIZE), 1)};
@@ -131,21 +134,16 @@ sb_id_t sb_id_map_get_local(void *address_of_local) {
 }
 
 // Shadow memory that associates pointers with borrow stacks
-shadow_map_t __sb_stack_map;
+sb_stack_t *__sb_stack = NULL;
 
 // Initialises a shadow map of stack pointers
 void sb_stack_map_init() {
-  shadow_map_init(&__sb_stack_map, sizeof(sb_stack_t *));
+  __sb_stack =  sb_stack_create();
 }
 
 // Gets the borrow stack associated with the memory location pointed to by ptr.
 sb_stack_t *sb_stack_get(void *ptr) {
-  sb_stack_t **shadow_stack = shadow_map_get(&__sb_stack_map, ptr);
-  if (!*shadow_stack) {
-    *shadow_stack = sb_stack_create();
-    (*shadow_stack)->top = 0;
-  }
-  return *shadow_stack;
+  return __sb_stack->ptr == ptr ? __sb_stack : NULL;
 }
 
 // initialise ghost state for stacked borrows
@@ -165,9 +163,14 @@ sb_stack_t *sb_stack_get(void *ptr) {
 // through a mutable ref.
 #define NEW_LOCAL(local) sb_new_local(&local)
 void sb_new_local(void *ptr) {
+  // decide nondeterministically to track this location
+  if (nondet_size_t())
+    return;
   sb_id_t fresh_id = sb_id_fresh();
   sb_id_map_set_local(ptr, fresh_id);
-  sb_stack_push(sb_stack_get(ptr), SB_UNIQUE, fresh_id);
+  __sb_stack->ptr = ptr;
+  __sb_stack->top = 0;
+  sb_stack_push(__sb_stack, SB_UNIQUE, fresh_id);
 }
 
 // Initialises the borrow stack for the dynamic object pointed to by
@@ -176,9 +179,13 @@ void sb_new_local(void *ptr) {
 // the fresh pointer value. That pointer variable uniquely owns the object.
 #define NEW_DYNAMIC(ptr) sb_new_dynamic(&ptr)
 void sb_new_dynamic(void **ptr) {
+  if (nondet_size_t())
+    return;
   sb_id_t fresh_id = sb_id_fresh();
   sb_id_map_set_ptr(ptr, fresh_id);
-  sb_stack_push(sb_stack_get(*ptr), SB_UNIQUE, fresh_id);
+  __sb_stack->ptr = *ptr;
+  __sb_stack->top = 0;
+  sb_stack_push(__sb_stack, SB_UNIQUE, fresh_id);
 }
 
 #define UNIQUE_FROM_LOCAL(new_ref, local)                                      \
@@ -187,10 +194,12 @@ void sb_new_dynamic(void **ptr) {
 // Models the creation of a new mutable reference created from the address of a
 // local variable.
 void sb_new_mut_from_local(void **new_ref, void *local) {
+  if(__sb_stack->ptr != local)
+    return;
   sb_id_t old_id = sb_id_map_get_local(local);
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
-  sb_stack_push(sb_stack_get(local), SB_UNIQUE, new_id);
+  sb_stack_push(__sb_stack, SB_UNIQUE, new_id);
 }
 
 #define UNIQUE_FROM_REF(new_ref, old_ref)                                      \
@@ -199,6 +208,8 @@ void sb_new_mut_from_local(void **new_ref, void *local) {
 // Models a new mutable reference created by borrowing an existing reference.
 // let &mut y = x;
 void sb_new_mut_from_ref(void **new_ref, void **old_ref) {
+  if(__sb_stack->ptr != *old_ref)
+    return;
   sb_id_t old_id = sb_id_map_get_ptr(old_ref);
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
@@ -224,15 +235,19 @@ void sb_new_mut_from_ref(void **new_ref, void **old_ref) {
   } while (0)
 
 bool sb_use1_local(void *used) {
+  if (__sb_stack->ptr != used)
+    return true;
+  sb_stack_t *stack = __sb_stack;
   sb_id_t used_id = sb_id_map_get_local(used);
-  sb_stack_t *stack = sb_stack_get(used);
-  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
-    if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE) {
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++)
+  {
+    if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE)
+    {
       stack->top = i + 1;
       return true;
     }
   }
-  return false;
+    return false;
 }
 
 #define USE1(used)                                                             \
@@ -244,8 +259,10 @@ bool sb_use1_local(void *used) {
   } while (0)
 
 bool sb_use1(void **used) {
+  if (__sb_stack->ptr != *used)
+    return true;
   sb_id_t used_id = sb_id_map_get_ptr(used);
-  sb_stack_t *stack = sb_stack_get(*used);
+  sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE) {
       stack->top = i + 1;
@@ -260,8 +277,10 @@ bool sb_use1(void **used) {
 
 // New raw pointer from the address of a local variable.
 void sb_new_raw_from_local(void **new_raw, void *local) {
+  if(__sb_stack->ptr != local)
+    return;
   sb_id_map_set_ptr(new_raw, __sb_id_bottom);
-  sb_stack_push(sb_stack_get(local), SB_SHARED_RW, __sb_id_bottom);
+  sb_stack_push(__sb_stack, SB_SHARED_RW, __sb_id_bottom);
 }
 
 #define SHARED_RW_FROM_REF(new_raw, old_ref)                                   \
@@ -269,8 +288,10 @@ void sb_new_raw_from_local(void **new_raw, void *local) {
 
 // New raw pointer from a reference.
 void sb_new_raw_from_ref(void **new_raw, void **old_ref) {
+  if(__sb_stack->ptr != *old_ref)
+    return;
   sb_id_map_set_ptr(new_raw, __sb_id_bottom);
-  sb_stack_push(sb_stack_get(*old_ref), SB_SHARED_RW, __sb_id_bottom);
+  sb_stack_push(__sb_stack, SB_SHARED_RW, __sb_id_bottom);
 }
 
 #define TRANSMUTE_REF(new_ref, old_ref) sb_transmute_ref(&new_ref, &old_ref)
@@ -278,6 +299,8 @@ void sb_new_raw_from_ref(void **new_raw, void **old_ref) {
 // Transmuting a ref to another ref copies the borrow id but does not modify
 // the stack.
 void sb_transmute_ref(void **new_ref, void **old_ref) {
+  if (__sb_stack->ptr != *old_ref)
+    return;
   sb_id_map_set_ptr(new_ref, sb_id_map_get_ptr(old_ref));
 }
 
@@ -294,9 +317,11 @@ void sb_transmute_ref(void **new_ref, void **old_ref) {
   } while (0)
 
 bool sb_use2_local(void *used) {
+  if (__sb_stack->ptr != used)
+    return true;
   sb_id_t used_id = sb_id_map_get_local(used);
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
-  sb_stack_t *stack = sb_stack_get(used);
+  sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
       stack->top = i + 1;
@@ -315,9 +340,11 @@ bool sb_use2_local(void *used) {
   } while (0)
 
 bool sb_use2(void **used) {
+  if (__sb_stack->ptr != *used)
+    return true;
   sb_id_t used_id = sb_id_map_get_ptr(used);
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
-  sb_stack_t *stack = sb_stack_get(*used);
+  sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
       stack->top = i + 1;
@@ -332,6 +359,8 @@ bool sb_use2(void **used) {
 
 // New mutable reference created from the address of a stack variable.
 void sb_new_shared_from_local(void **new_ref, void *local) {
+  if (__sb_stack->ptr != local)
+    return;
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
   sb_stack_push(sb_stack_get(local), SB_SHARED_RO, new_id);
@@ -342,6 +371,8 @@ void sb_new_shared_from_local(void **new_ref, void *local) {
 
 // New mutable reference created by copying an existing reference.
 void sb_new_shared_from_ref(void **new_ref, void **old_ref) {
+  if (__sb_stack->ptr != *old_ref)
+    return;
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
   sb_stack_push(sb_stack_get(*old_ref), SB_SHARED_RO, new_id);
@@ -362,8 +393,10 @@ void sb_new_shared_from_ref(void **new_ref, void **old_ref) {
   } while (0)
 
 bool sb_read1_local(void *used) {
+  if (__sb_stack->ptr != used)
+    return true;
   sb_id_t used_id = sb_id_map_get_local(used);
-  sb_stack_t *stack = sb_stack_get(used);
+  sb_stack_t *stack = __sb_stack;
   bool found = false;
   int8_t new_top = -1;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
@@ -392,8 +425,10 @@ bool sb_read1_local(void *used) {
   } while (0)
 
 bool sb_read1(void **used) {
+  if (__sb_stack->ptr != *used)
+    return true;
   sb_id_t used_id = sb_id_map_get_ptr(used);
-  sb_stack_t *stack = sb_stack_get(*used);
+  sb_stack_t *stack = __sb_stack;
   bool found = false;
   int8_t new_top = -1;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {

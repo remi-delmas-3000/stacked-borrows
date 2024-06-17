@@ -1,4 +1,9 @@
+#ifdef DEMONIC
+#include "stacked_borrows_demonic.h"
+#else
 #include "stacked_borrows.h"
+#endif
+
 #include <stdbool.h>
 
 bool nondet_bool();
