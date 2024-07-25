@@ -6,7 +6,7 @@
 
 /*
   This model uses:
-  - 1 shadow map to associate tag values with pointer values.
+  - 1 shadow map to associate tag values with memory locations used to store pointer values.
   - a single borrow stack tracking a single memory location that is picked non-deterministically.
 */
 
