@@ -25,12 +25,13 @@ int main() {
   int *y = x;
   UNIQUE_FROM_REF(y, x);
 
-  if (nondet_bool()) {
+  bool used_x = nondet_bool();
+  if (used_x) {
     USE1(x);
     *x += 1;
   }
 
-  if (nondet_bool()) {
+  if (!used_x && nondet_bool()) {
     USE1(y);
     *y = 2;
   }

@@ -19,9 +19,6 @@ shared_pass:
 transmute_fail:
 	cbmc --pointer-check --bounds-check --slice-formula transmute_fail.c
 
-test:
-	cbmc --pointer-check --bounds-check --slice-formula test.c
-
 # demonic versions
 
 mutable_fail_demonic:
@@ -45,5 +42,11 @@ shared_pass_demonic:
 transmute_fail_demonic:
 	cbmc -DDEMONIC --pointer-check --bounds-check --slice-formula transmute_fail.c
 
-test_demonic:
-	cbmc -DDEMONIC --pointer-check --bounds-check --slice-formula test.c
+struct_fields_pass_demonic:
+	cbmc -DDEMONIC --pointer-check --bounds-check --slice-formula struct_fields_pass.c
+
+struct_fields_fail_demonic:
+	cbmc -DDEMONIC --pointer-check --bounds-check --slice-formula struct_fields_fail.c
+
+struct_fields_fail2_demonic:
+	cbmc -DDEMONIC --pointer-check --bounds-check --slice-formula struct_fields_fail2.c

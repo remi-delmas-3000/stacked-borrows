@@ -74,7 +74,7 @@ size_t nondet_size_t();
 // returns size if symbolic is false, a nondet constrained to
 // be at least size otherwise
 size_t __init_size(bool symbolic, size_t size) {
-  assert(size <= UINT8_MAX);
+  __CPROVER_precondition(size <= UINT8_MAX, "size <= UINT8_MAX");
   if (!symbolic)
     return size;
   size_t result = nondet_size_t();
@@ -97,12 +97,14 @@ sb_stack_t *sb_stack_create() {
 }
 
 void sb_stack_push(sb_stack_t *stack, sb_kind_t kind, sb_id_t id) {
-  assert(stack->top < SB_MAX_STACK_SIZE);
+  __CPROVER_precondition(stack != NULL, "stack != NULL");
+  __CPROVER_precondition(stack->top < SB_MAX_STACK_SIZE, "stack is not full");
   stack->elems[stack->top] = (sb_item_t){.kind = kind, .id = id};
   stack->top++;
 }
 
 int8_t sb_stack_find(sb_stack_t *stack, sb_kind_t kind, sb_id_t id) {
+  __CPROVER_precondition(stack != NULL, "stack != NULL");
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
     if (stack->elems[i].kind == kind & stack->elems[i].id == id)
       return i;
@@ -139,11 +141,6 @@ sb_stack_t *__sb_stack = NULL;
 // Initialises a shadow map of stack pointers
 void sb_stack_map_init() {
   __sb_stack =  sb_stack_create();
-}
-
-// Gets the borrow stack associated with the memory location pointed to by ptr.
-sb_stack_t *sb_stack_get(void *ptr) {
-  return __sb_stack->ptr == ptr ? __sb_stack : NULL;
 }
 
 // initialise ghost state for stacked borrows
@@ -213,7 +210,7 @@ void sb_new_mut_from_ref(void **new_ref, void **old_ref) {
   sb_id_t old_id = sb_id_map_get_ptr(old_ref);
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
-  sb_stack_push(sb_stack_get(*old_ref), SB_UNIQUE, new_id);
+  sb_stack_push(__sb_stack, SB_UNIQUE, new_id);
 }
 
 // USE-1 Rule from the paper. Triggered when a memory location is updated
@@ -234,6 +231,7 @@ void sb_new_mut_from_ref(void **new_ref, void **old_ref) {
       __CPROVER_assume(false);                                                 \
   } while (0)
 
+#if 0
 bool sb_use1_local(void *used) {
   if (__sb_stack->ptr != used)
     return true;
@@ -247,8 +245,25 @@ bool sb_use1_local(void *used) {
       return true;
     }
   }
-    return false;
+  return false;
 }
+#else
+bool sb_use1_local(void *used) {
+  if (__sb_stack->ptr != used)
+    return true;
+  sb_stack_t *stack = __sb_stack;
+  sb_id_t used_id = sb_id_map_get_local(used);
+  for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++)
+  {
+    if (stack->elems[i].id == used_id & stack->elems[i].kind == SB_UNIQUE)
+    {
+      stack->top = i + 1;
+      return true;
+    }
+  }
+  return false;
+}
+#endif
 
 #define USE1(used)                                                             \
   do {                                                                         \
@@ -264,7 +279,7 @@ bool sb_use1(void **used) {
   sb_id_t used_id = sb_id_map_get_ptr(used);
   sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
-    if (stack->elems[i].id == used_id && stack->elems[i].kind == SB_UNIQUE) {
+    if (stack->elems[i].id == used_id & stack->elems[i].kind == SB_UNIQUE) {
       stack->top = i + 1;
       return true;
     }
@@ -323,7 +338,7 @@ bool sb_use2_local(void *used) {
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
   sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
-    if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
+    if (stack->elems[i].id == used_id & stack->elems[i].kind == kind) {
       stack->top = i + 1;
       return true;
     }
@@ -346,7 +361,7 @@ bool sb_use2(void **used) {
   sb_kind_t kind = (used_id == __sb_id_bottom) ? SB_SHARED_RW : SB_UNIQUE;
   sb_stack_t *stack = __sb_stack;
   for (int8_t i = 0; (i < SB_MAX_STACK_SIZE) && (i < stack->top); i++) {
-    if (stack->elems[i].id == used_id && stack->elems[i].kind == kind) {
+    if (stack->elems[i].id == used_id & stack->elems[i].kind == kind) {
       stack->top = i + 1;
       return true;
     }
@@ -363,7 +378,7 @@ void sb_new_shared_from_local(void **new_ref, void *local) {
     return;
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
-  sb_stack_push(sb_stack_get(local), SB_SHARED_RO, new_id);
+  sb_stack_push(__sb_stack, SB_SHARED_RO, new_id);
 }
 
 #define SHARED_RO_FROM_REF(new_ref, old_ref)                                   \
@@ -375,7 +390,7 @@ void sb_new_shared_from_ref(void **new_ref, void **old_ref) {
     return;
   sb_id_t new_id = sb_id_fresh();
   sb_id_map_set_ptr(new_ref, new_id);
-  sb_stack_push(sb_stack_get(*old_ref), SB_SHARED_RO, new_id);
+  sb_stack_push(__sb_stack, SB_SHARED_RO, new_id);
 }
 
 // READ-1 Rule from the paper. Check that the used borrow id in the stack
